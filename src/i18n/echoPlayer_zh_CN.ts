@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE TS>
+<TS version="2.1" language="zh_CN">
+<context>
+    <name>TitleBar</name>
+    <message>
+        <source>打开...</source>
+        <translation>打开...</translation>
+    </message>
+    <message>
+        <source>退出</source>
+        <translation>退出</translation>
+    </message>
+    <message>
+        <source>配置</source>
+        <translation>配置</translation>
+    </message>
+    <message>
+        <source>语言</source>
+        <translation>语言</translation>
+    </message>
+    <message>
+        <source>中文(简体)</source>
+        <translation>中文(简体)</translation>
+    </message>
+    <message>
+        <source>中文(繁體)</source>
+        <translation>中文(繁體)</translation>
+    </message>
+    <message>
+        <source>English</source>
+        <translation>English</translation>
+    </message>
+    <message>
+        <source>最小化</source>
+        <translation>最小化</translation>
+    </message>
+    <message>
+        <source>最大化</source>
+        <translation>最大化</translation>
+    </message>
+    <message>
+        <source>全屏</source>
+        <translation>全屏</translation>
+    </message>
+    <message>
+        <source>关闭</source>
+        <translation>关闭</translation>
+    </message>
+</context>
+<context>
+    <name>ControlBar</name>
+    <message>
+        <source>播放</source>
+        <translation>播放</translation>
+    </message>
+    <message>
+        <source>暂停</source>
+        <translation>暂停</translation>
+    </message>
+    <message>
+        <source>停止</source>
+        <translation>停止</translation>
+    </message>
+    <message>
+        <source>左键：快退\n右键：上一个</source>
+        <translation>左键：快退\n右键：上一个</translation>
+    </message>
+    <message>
+        <source>左键：快进\n右键：下一个</source>
+        <translation>左键：快进\n右键：下一个</translation>
+    </message>
+    <message>
+        <source>打开文件</source>
+        <translation>打开文件</translation>
+    </message>
+    <message>
+        <source>切换静音</source>
+        <translation>切换静音</translation>
+    </message>
+</context>
+<context>
+    <name>MainWindow</name>
+    <message>
+        <source>字幕</source>
+        <translation>字幕</translation>
+    </message>
+    <message>
+        <source>无</source>
+        <translation>无</translation>
+    </message>
+</context>
+</TS>

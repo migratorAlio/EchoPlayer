@@ -43,6 +43,24 @@ inline bool parsePlaylist(const QString &data, QStringList &paths, QStringList &
 
 inline QString makeSelect(const QString &path)  { return "SELECT\t" + path; }
 inline QString makeCurrent(const QString &path) { return "CURRENT\t" + path; }
+// The playlist runs in its own process, so the player forwards locale changes.
+inline QString makeLanguage(const QString &locale) { return "LANG\t" + locale; }
+
+// repeat: 0 = off, 1 = playlist, 2 = single track
+inline QString makeMode(int repeat, bool shuffle)
+{
+    return QString("MODE\t%1\t%2").arg(repeat).arg(shuffle ? 1 : 0);
+}
+
+// Commands sent from the playlist process back to the player.
+// Name is one of: ADD, REMOVE, MOVE, CLEAR, MODE, PLAY.
+inline QString makeCommand(const QString &name, const QStringList &args = {})
+{
+    QStringList parts;
+    parts << QStringLiteral("CMD") << name;
+    parts << args;
+    return parts.join('\t');
+}
 
 inline QString makeGeometry(int x, int y, int w, int h)
 {

@@ -1,0 +1,122 @@
+{
+  "app-id": "org.echoplayer.EchoPlayer",
+  "runtime": "org.kde.Platform",
+  "runtime-version": "6.8",
+  "sdk": "org.kde.Sdk",
+  "command": "EchoPlayer",
+  "separate-locales": false,
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.ffmpeg-full"
+  ],
+  "add-extensions": {
+    "org.freedesktop.Platform.ffmpeg-full": {
+      "directory": "lib/ffmpeg",
+      "version": "24.08",
+      "add-ld-path": "lib"
+    }
+  },
+  "build-options": {
+    "append-path": "/usr/lib/sdk/ffmpeg-full/bin",
+    "prepend-ld-library-path": "/usr/lib/sdk/ffmpeg-full/lib",
+    "append-pkg-config-path": "/usr/lib/sdk/ffmpeg-full/lib/pkgconfig"
+  },
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--socket=pulseaudio",
+    "--share=network",
+    "--device=dri",
+    "--filesystem=home:ro",
+    "--filesystem=xdg-pictures",
+    "--filesystem=xdg-download",
+    "--own-name=org.mpris.MediaPlayer2.EchoPlayer",
+    "--talk-name=org.freedesktop.ScreenSaver",
+    "--talk-name=org.gnome.ScreenSaver",
+    "--talk-name=org.kde.Screensaver"
+  ],
+  "cleanup": [
+    "/include",
+    "/share/man",
+    "/share/doc",
+    "*.a",
+    "*.la"
+  ],
+  "modules": [
+    {
+      "name": "mpv",
+      "buildsystem": "meson",
+      "config-opts": [
+        "-Dcplayer=false",
+        "-Dlibmpv=true",
+        "-Dbuild-date=false",
+        "-Dtests=false",
+        "-Dlua=disabled",
+        "-Djavascript=disabled",
+        "-Duchardet=disabled",
+        "-Dlibarchive=disabled",
+        "-Dlibavdevice=disabled",
+        "-Dlibbluray=disabled",
+        "-Ddvdnav=disabled",
+        "-Dcdda=disabled",
+        "-Dcplugins=disabled",
+        "-Dvapoursynth=disabled",
+        "-Drubberband=disabled",
+        "-Dzimg=disabled",
+        "-Dlcms2=disabled",
+        "-Djpeg=disabled",
+        "-Dlibplacebo=disabled",
+        "-Dlibplacebo-next=disabled",
+        "-Dvulkan=disabled",
+        "-Dshaderc=disabled",
+        "-Dspirv-cross=disabled",
+        "-Dvaapi=disabled",
+        "-Dvdpau=disabled",
+        "-Dvdpau-gl-x11=disabled",
+        "-Ddrm=disabled",
+        "-Dgbm=disabled",
+        "-Dxv=disabled",
+        "-Dsdl2-video=disabled",
+        "-Dsdl2-audio=disabled",
+        "-Dalsa=disabled",
+        "-Djack=disabled",
+        "-Dpipewire=disabled",
+        "-Dsndio=disabled",
+        "-Dopenal=disabled",
+        "-Dmanpage-build=disabled",
+        "-Dhtml-build=disabled",
+        "-Dpdf-build=disabled",
+        "-Dgl=enabled",
+        "-Dplain-gl=enabled",
+        "-Degl=enabled",
+        "-Dpulse=enabled"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/mpv-player/mpv.git",
+          "tag": "v0.36.0"
+        }
+      ],
+      "cleanup": [
+        "/bin",
+        "/share/man",
+        "/share/doc"
+      ]
+    },
+    {
+      "name": "EchoPlayer",
+      "buildsystem": "cmake-ninja",
+      "builddir": true,
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../.."
+        }
+      ]
+    }
+  ]
+}

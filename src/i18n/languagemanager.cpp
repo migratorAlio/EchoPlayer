@@ -1,5 +1,6 @@
 #include "i18n/languagemanager.h"
 #include <QApplication>
+#include <QCoreApplication>
 #include <QFile>
 #include <QDir>
 #include <QDebug>
@@ -103,7 +104,9 @@ QString LanguageManager::translationsDir()
 {
     QStringList candidates = {
         QApplication::applicationDirPath() + "/translations",
+        QApplication::applicationDirPath() + "/../share/EchoPlayer/translations",
         QApplication::applicationDirPath() + "/../src/i18n",
+        "/usr/share/EchoPlayer/translations",
         QDir::currentPath() + "/translations",
         QDir::currentPath() + "/src/i18n",
     };
@@ -119,10 +122,19 @@ void LanguageManager::switchLanguage(const QString &locale)
     if (m_currentLocale == locale)
         return;
 
-    QString tsFile = translationsDir() + "/EchoPlayer_" + locale + ".ts";
-
-    if (!QFile::exists(tsFile)) {
-        qWarning() << "[i18n] .ts not found:" << tsFile;
+    // Source files are named echoPlayer_*.ts while build.sh installs them as
+    // EchoPlayer_*.ts. Accept both spellings, plus a few installation layouts.
+    const QString dir = translationsDir();
+    QString tsFile;
+    for (const QString &prefix : {QStringLiteral("EchoPlayer_"), QStringLiteral("echoPlayer_")}) {
+        const QString candidate = dir + "/" + prefix + locale + ".ts";
+        if (QFile::exists(candidate)) {
+            tsFile = candidate;
+            break;
+        }
+    }
+    if (tsFile.isEmpty()) {
+        qWarning() << "[i18n] .ts not found for" << locale << "in" << dir;
         return;
     }
 
@@ -131,7 +143,10 @@ void LanguageManager::switchLanguage(const QString &locale)
     if (m_translator->load(tsFile)) {
         qApp->installTranslator(m_translator);
         m_currentLocale = locale;
-        qDebug() << "[i18n] switched to" << locale;
+        // Two different contexts: proves the .ts contexts match Qt's tr() ones.
+        qDebug() << "[i18n] switched to" << locale
+                 << "menu:" << QCoreApplication::translate("MainWindow", "字幕")
+                 << "panel:" << QCoreApplication::translate("AdjustPanel", "图形均衡器");
         emit languageChanged();
     } else {
         qWarning() << "[i18n] failed to load" << tsFile;

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=EchoPlayer
+Comment=A media player built with Qt6 + mpv + FFmpeg
+Comment[zh_CN]=基于 Qt6 与 mpv 的 Linux 播放器
+Exec=EchoPlayer %F
+Icon=org.echoplayer.EchoPlayer
+Categories=AudioVideo;Video;Audio;Player;
+Keywords=video;audio;player;mpv;media;
+Terminal=false
+StartupNotify=true
+StartupWMClass=EchoPlayer
+MimeType=video/mp4;video/x-matroska;video/avi;video/quicktime;video/x-msvideo;video/mpeg;video/webm;video/x-flv;video/x-ms-wmv;audio/mpeg;audio/flac;audio/x-wav;audio/x-m4a;audio/ogg;audio/x-vorbis+ogg;audio/opus;audio/x-aac;audio/x-aiff;audio/x-ape;application/x-cue;

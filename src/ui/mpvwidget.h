@@ -1,28 +1,53 @@
-#ifndef MPVWIDGET_H
-#define MPVWIDGET_H
+#pragma once
 
-#include <QWidget>
-#include <QAbstractNativeEventFilter>
-#include <QTimer>
+#include <QOpenGLWidget>
+#include <QString>
+#include <QStringList>
+#include <QVariant>
+
 #include <mpv/client.h>
+#include <mpv/render_gl.h>
 
-class MpvWidget : public QWidget, public QAbstractNativeEventFilter
+class MpvWidget : public QOpenGLWidget
 {
     Q_OBJECT
 public:
     explicit MpvWidget(QWidget *parent = nullptr);
-    ~MpvWidget();
+    ~MpvWidget() override;
 
     mpv_handle *handle() const { return m_mpv; }
+    bool mpvReady() const { return m_mpvInitialized; }
 
     void loadFile(const QString &path);
     void play();
     void pause();
     void stop();
-    void seek(double pos);
+    void seek(double pos, bool absolute = true);
+    void frameStep();
+    void frameBack();
+
+    void setHwDec(const QString &api);
     void setVolume(double vol);
     void setMute(bool mute);
-    void setHwDec(const QString &api);
+    void setSpeed(double speed);
+    void setAudioTrack(int64_t id);
+    void setSubtitleTrack(int64_t id);
+    void addSubtitle(const QString &path);
+    void setChannelBalance(double balance);
+    void setAspect(const QString &aspect);
+    void setVideoRotate(int degrees);
+    void setSubDelay(double seconds);
+    void setSubScale(double scale);
+    void setSubPos(int pos);
+    void setABLoopA(double pos);
+    void setABLoopB(double pos);
+    void setAudioFilter(const QString &filter);
+    void screenshot(const QString &filePath, bool withSubtitles = true);
+
+    void setProperty(const QString &name, const QVariant &value);
+    QVariant property(const QString &name) const;
+    void command(const QStringList &args);
+
     double timePos() const;
     double duration() const;
     QString videoFormat() const;
@@ -38,25 +63,20 @@ signals:
     void videoFormatChanged(const QString &fmt);
 
 protected:
-    void showEvent(QShowEvent *event) override;
+    void initializeGL() override;
+    void paintGL() override;
 
 private slots:
     void onMpvEvents();
-    void pollChildWindow();
 
 private:
     static void onWakeup(void *ctx);
+    static void onRenderUpdate(void *ctx);
+    static void *getProcAddress(void *ctx, const char *name);
     void handleEvent(mpv_event *event);
-    void deferLoad(const QString &path);
-    void setupInputGrabs();
-
-    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
 
     mpv_handle *m_mpv = nullptr;
+    mpv_render_context *m_renderCtx = nullptr;
     QString m_pendingFile;
-    bool m_initialized = false;
-    QTimer *m_pollTimer = nullptr;
-    unsigned long m_mpvChildWid = 0;
+    bool m_mpvInitialized = false;
 };
-
-#endif // MPVWIDGET_H

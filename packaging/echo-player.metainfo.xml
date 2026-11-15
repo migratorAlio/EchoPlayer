@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.echoplayer.EchoPlayer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>EchoPlayer</name>
+  <summary>Media player for Linux built on mpv</summary>
+  <summary xml:lang="zh_CN">基于 mpv 的 Linux 影音播放器</summary>
+  <description>
+    <p>EchoPlayer is a desktop media player that uses mpv for all audio and video
+    playback and Qt6 for the interface. It works on X11 and Wayland, supports
+    GPU hardware decoding, subtitles, playlists, network streams, MPRIS media
+    keys and remembers where you stopped watching.</p>
+    <p xml:lang="zh_CN">EchoPlayer 使用 mpv 统一负责音视频播放、Qt6 负责界面，
+    支持 X11 与 Wayland、硬件解码、外挂字幕、播放列表、网络流、MPRIS 媒体键，
+    并能记忆播放进度。</p>
+  </description>
+  <launchable type="desktop-id">org.echoplayer.EchoPlayer.desktop</launchable>
+  <url type="homepage">https://github.com/anomalyco/EchoPlayer</url>
+  <developer_name>EchoPlayer Team</developer_name>
+  <provides>
+    <binary>EchoPlayer</binary>
+    <binary>EchoPlayer-playlist</binary>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <keywords>
+    <keyword>video</keyword>
+    <keyword>audio</keyword>
+    <keyword>mpv</keyword>
+    <keyword>player</keyword>
+    <keyword>mpris</keyword>
+  </keywords>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>console</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-11-14"/>
+  </releases>
+</component>

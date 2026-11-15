@@ -1,44 +1,10 @@
 #pragma once
 
-#include <QImage>
 #include <QString>
 #include <QList>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <SDL2/SDL.h>
-}
-
-struct AudioSpec {
-    int sampleRate;
-    int channels;
-    SDL_AudioFormat format;
-};
-
-struct Frame {
-    double pts;
-    AVFrame *frame = nullptr;
-    QImage image;
-    bool skip = false;
-};
-
-struct SubtitleItem {
-    double startPts;
-    double endPts;
-    QImage image;
-    int x = 0;
-    int y = 0;
-    bool isText = false;
-};
-
-struct SubtitleInfo {
-    int streamIndex;
-    QString language;
-    QString displayName;
-};
-
 struct AudioTrackInfo {
-    int streamIndex;
+    int streamIndex = -1;
     QString language;
     QString displayName;
 };

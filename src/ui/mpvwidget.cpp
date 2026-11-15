@@ -1,36 +1,42 @@
 #include "ui/mpvwidget.h"
 
+#include <QApplication>
 #include <QDebug>
 #include <QMetaObject>
-#include <QShowEvent>
-#include <QApplication>
-#include <QWindow>
+#include <QOpenGLContext>
+#include <QSurfaceFormat>
 #include <QtGui/qguiapplication_platform.h>
-#include <xcb/xcb.h>
-#include <xcb/xproto.h>
+
+#include <cstring>
 
 MpvWidget::MpvWidget(QWidget *parent)
-    : QWidget(parent)
+    : QOpenGLWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    setAttribute(Qt::WA_NativeWindow);
 
-    m_pollTimer = new QTimer(this);
-    m_pollTimer->setSingleShot(false);
-    connect(m_pollTimer, &QTimer::timeout, this, &MpvWidget::pollChildWindow);
+    QSurfaceFormat fmt;
+    fmt.setVersion(3, 3);
+    fmt.setProfile(QSurfaceFormat::CoreProfile);
+    fmt.setSwapInterval(1);
+    setFormat(fmt);
 
     m_mpv = mpv_create();
     if (!m_mpv) {
-        qWarning("mpv_create failed (null handle)");
+        qWarning("[mpv] mpv_create failed");
         return;
     }
 
-    mpv_set_option_string(m_mpv, "video-rotate", "no");
-    mpv_set_option_string(m_mpv, "audio", "no");
+    // Rendering is driven by mpv_render_context_render() from paintGL().
+    // No --wid, no X11 child window, no xcb event grabs: works on X11 and Wayland.
+    mpv_set_option_string(m_mpv, "vo", "libmpv");
     mpv_set_option_string(m_mpv, "input-default-bindings", "no");
     mpv_set_option_string(m_mpv, "input-builtin-bindings", "no");
-
+    mpv_set_option_string(m_mpv, "video-rotate", "no");
+    mpv_set_option_string(m_mpv, "osc", "no");
+    mpv_set_option_string(m_mpv, "keep-open", "no");
+    mpv_set_option_string(m_mpv, "sub-auto", "exact");
+    mpv_set_option_string(m_mpv, "audio-file-auto", "exact");
 
     mpv_observe_property(m_mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(m_mpv, 0, "duration", MPV_FORMAT_DOUBLE);
@@ -40,192 +46,113 @@ MpvWidget::MpvWidget(QWidget *parent)
     mpv_observe_property(m_mpv, 0, "video-format", MPV_FORMAT_STRING);
 
     mpv_set_wakeup_callback(m_mpv, onWakeup, this);
-
-    qApp->installNativeEventFilter(this);
 }
 
 MpvWidget::~MpvWidget()
 {
-    qApp->removeNativeEventFilter(this);
+    makeCurrent();
+    if (m_renderCtx) {
+        mpv_render_context_set_update_callback(m_renderCtx, nullptr, nullptr);
+        mpv_render_context_free(m_renderCtx);
+        m_renderCtx = nullptr;
+    }
+    doneCurrent();
     if (m_mpv)
         mpv_terminate_destroy(m_mpv);
+    m_mpv = nullptr;
 }
 
-void MpvWidget::setupInputGrabs()
+void *MpvWidget::getProcAddress(void *, const char *name)
 {
-    auto *x11App = qApp->nativeInterface<QNativeInterface::QX11Application>();
-    if (!x11App) { qDebug() << "[mpv] no X11App"; return; }
-    xcb_connection_t *conn = x11App->connection();
-    if (!conn) { qDebug() << "[mpv] no xcb conn"; return; }
+    QOpenGLContext *ctx = QOpenGLContext::currentContext();
+    if (!ctx)
+        return nullptr;
+    return reinterpret_cast<void *>(ctx->getProcAddress(name));
+}
 
-    xcb_window_t parentWid = static_cast<xcb_window_t>(winId());
-    qDebug() << "[mpv] setupInputGrabs parentWid=" << parentWid;
+void MpvWidget::initializeGL()
+{
+    if (!m_mpv)
+        return;
 
-    // Remove any existing grab for this window
-    xcb_ungrab_button(conn, XCB_BUTTON_INDEX_ANY, parentWid, XCB_MOD_MASK_ANY);
+    if (!m_mpvInitialized) {
+        if (mpv_initialize(m_mpv) < 0) {
+            qWarning("[mpv] mpv_initialize failed");
+            return;
+        }
+        m_mpvInitialized = true;
+    }
 
-    // Passive grab: redirect all button+pointer-motion events from parent+children to parent
-    // owner_events=False → events go to parentWid instead of the child mpv window
-    xcb_grab_button(conn, false, parentWid,
-                    XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
-                    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
-                    parentWid, XCB_NONE,
-                    XCB_BUTTON_INDEX_ANY, XCB_MOD_MASK_ANY);
-    xcb_flush(conn);
+    if (m_renderCtx)
+        return;
 
-    qDebug() << "[mpv] passive grab installed on" << parentWid;
+    mpv_opengl_init_params glInit{&MpvWidget::getProcAddress, this};
 
-    // Also try to find and block mpv's child window (belt and suspenders)
-    xcb_query_tree_cookie_t cookie = xcb_query_tree(conn, parentWid);
-    xcb_query_tree_reply_t *reply = xcb_query_tree_reply(conn, cookie, nullptr);
-    if (!reply) { qDebug() << "[mpv] no query tree reply"; return; }
-
-    xcb_window_t *children = xcb_query_tree_children(reply);
-    int count = xcb_query_tree_children_length(reply);
-    qDebug() << "[mpv] tree children count=" << count;
-
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        qDebug() << "[mpv] child" << i << "wid=" << children[i];
-        if (children[i] != parentWid) {
-            m_mpvChildWid = children[i];
-            found = true;
+    // Supply the native display so VAAPI/EGL hardware decode can use
+    // zero-copy interop on both X11 and Wayland sessions.
+    bool haveDisplay = false;
+    mpv_render_param displayParam{MPV_RENDER_PARAM_INVALID, nullptr};
+#if QT_CONFIG(xcb)
+    if (auto *x11 = qApp->nativeInterface<QNativeInterface::QX11Application>()) {
+        displayParam = {MPV_RENDER_PARAM_X11_DISPLAY, x11->display()};
+        haveDisplay = true;
+    }
+#endif
+#if QT_CONFIG(wayland)
+    if (!haveDisplay) {
+        if (auto *wl = qApp->nativeInterface<QNativeInterface::QWaylandApplication>()) {
+            displayParam = {MPV_RENDER_PARAM_WL_DISPLAY, wl->display()};
+            haveDisplay = true;
         }
     }
-    free(reply);
+#endif
+    Q_UNUSED(haveDisplay)
 
-    if (found) {
-        m_pollTimer->stop();
-        qDebug() << "[mpv] child window" << m_mpvChildWid << "found";
-    }
-}
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_API_TYPE, const_cast<char *>(MPV_RENDER_API_TYPE_OPENGL)},
+        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &glInit},
+        displayParam,
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
 
-void MpvWidget::pollChildWindow()
-{
-    setupInputGrabs();
-}
-
-void MpvWidget::showEvent(QShowEvent *event)
-{
-    QWidget::showEvent(event);
-    if (m_initialized || !m_mpv) return;
-    m_initialized = true;
-
-    int64_t wid = static_cast<int64_t>(winId());
-    mpv_set_option(m_mpv, "wid", MPV_FORMAT_INT64, &wid);
-
-    if (mpv_initialize(m_mpv) < 0) {
-        qWarning("mpv_initialize failed");
+    if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
+        qWarning("[mpv] failed to create OpenGL render context");
+        m_renderCtx = nullptr;
         return;
     }
+    mpv_render_context_set_update_callback(m_renderCtx, onRenderUpdate, this);
+    qDebug() << "[mpv] OpenGL render context ready" << (haveDisplay ? "(native display supplied)" : "");
 
-    // Poll for child window since mpv creates it asynchronously
-    setupInputGrabs();
-    m_pollTimer->start(100);
-
-    // Load deferred file
     if (!m_pendingFile.isEmpty()) {
-        QString path = m_pendingFile;
+        const QString path = m_pendingFile;
         m_pendingFile.clear();
-        const QByteArray cpath = path.toUtf8();
-        const char *cmd[] = {"loadfile", cpath.constData(), nullptr};
-        mpv_command_async(m_mpv, 0, cmd);
+        loadFile(path);
     }
 }
 
-void MpvWidget::loadFile(const QString &path)
+void MpvWidget::paintGL()
 {
-    if (!m_mpv) return;
-    if (!m_initialized) {
-        deferLoad(path);
+    if (!m_renderCtx)
         return;
-    }
-    const QByteArray cpath = path.toUtf8();
-    const char *cmd[] = {"loadfile", cpath.constData(), nullptr};
-    mpv_command_async(m_mpv, 0, cmd);
-    // File load triggers child window creation, poll for it
-    m_pollTimer->start(100);
+
+    const qreal dpr = devicePixelRatioF();
+    const int w = qMax(1, static_cast<int>(width() * dpr));
+    const int h = qMax(1, static_cast<int>(height() * dpr));
+
+    mpv_opengl_fbo fbo{static_cast<int>(defaultFramebufferObject()), w, h, 0};
+    int flip = 1; // OpenGL default framebuffer has a flipped Y axis
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
+        {MPV_RENDER_PARAM_FLIP_Y, &flip},
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
+    mpv_render_context_render(m_renderCtx, params);
+    mpv_render_context_report_swap(m_renderCtx);
 }
 
-void MpvWidget::deferLoad(const QString &path)
+void MpvWidget::onRenderUpdate(void *ctx)
 {
-    m_pendingFile = path;
-}
-
-void MpvWidget::play()
-{
-    if (!m_mpv) return;
-    int flag = 0;
-    mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &flag);
-}
-
-void MpvWidget::pause()
-{
-    if (!m_mpv) return;
-    int flag = 1;
-    mpv_set_property(m_mpv, "pause", MPV_FORMAT_FLAG, &flag);
-}
-
-void MpvWidget::stop()
-{
-    if (!m_mpv) return;
-    const char *cmd[] = {"stop", nullptr};
-    mpv_command_async(m_mpv, 0, cmd);
-}
-
-void MpvWidget::seek(double pos)
-{
-    if (!m_mpv) return;
-    QByteArray posStr = QByteArray::number(pos, 'f', 3);
-    const char *cmd[] = {"seek", posStr.constData(), "absolute", nullptr};
-    mpv_command_async(m_mpv, 0, cmd);
-}
-
-void MpvWidget::setVolume(double vol)
-{
-    if (!m_mpv) return;
-    mpv_set_property(m_mpv, "volume", MPV_FORMAT_DOUBLE, &vol);
-}
-
-void MpvWidget::setMute(bool mute)
-{
-    if (!m_mpv) return;
-    int flag = mute ? 1 : 0;
-    mpv_set_property(m_mpv, "mute", MPV_FORMAT_FLAG, &flag);
-}
-
-void MpvWidget::setHwDec(const QString &api)
-{
-    if (!m_mpv) return;
-    mpv_set_property_string(m_mpv, "hwdec", api.toUtf8().constData());
-}
-
-double MpvWidget::timePos() const
-{
-    if (!m_mpv) return -1;
-    double pos = -1;
-    mpv_get_property(m_mpv, "time-pos", MPV_FORMAT_DOUBLE, &pos);
-    return pos;
-}
-
-double MpvWidget::duration() const
-{
-    if (!m_mpv) return 0;
-    double dur = 0;
-    mpv_get_property(m_mpv, "duration", MPV_FORMAT_DOUBLE, &dur);
-    return dur;
-}
-
-QString MpvWidget::videoFormat() const
-{
-    if (!m_mpv) return {};
-    const char *val = nullptr;
-    if (mpv_get_property(m_mpv, "video-format", MPV_FORMAT_STRING, &val) >= 0 && val) {
-        QString fmt = QString::fromUtf8(val);
-        mpv_free(const_cast<char *>(val));
-        return fmt;
-    }
-    return {};
+    QMetaObject::invokeMethod(static_cast<MpvWidget *>(ctx), "update", Qt::QueuedConnection);
 }
 
 void MpvWidget::onWakeup(void *ctx)
@@ -235,7 +162,8 @@ void MpvWidget::onWakeup(void *ctx)
 
 void MpvWidget::onMpvEvents()
 {
-    if (!m_mpv) return;
+    if (!m_mpv)
+        return;
     while (true) {
         mpv_event *event = mpv_wait_event(m_mpv, 0);
         if (event->event_id == MPV_EVENT_NONE)
@@ -248,34 +176,35 @@ void MpvWidget::handleEvent(mpv_event *event)
 {
     switch (event->event_id) {
     case MPV_EVENT_FILE_LOADED:
-        // Re-apply input blocking after file load (mpv may recreate child window)
-        setupInputGrabs();
+        qDebug() << "[mpv] file loaded";
         emit fileLoaded();
         break;
     case MPV_EVENT_END_FILE: {
-        mpv_event_end_file *ef = static_cast<mpv_event_end_file *>(event->data);
-        if (ef->reason == MPV_END_FILE_REASON_EOF)
+        auto *ef = static_cast<mpv_event_end_file *>(event->data);
+        if (ef && ef->reason == MPV_END_FILE_REASON_EOF) {
+            qDebug() << "[mpv] playback reached EOF";
             emit playbackFinished();
-        else if (ef->reason == MPV_END_FILE_REASON_ERROR)
-            emit mediaError(ef->error >= 0 ? QString() : mpv_error_string(ef->error));
+        }
+        else if (ef && ef->reason == MPV_END_FILE_REASON_ERROR)
+            emit mediaError(ef->error < 0 ? QString::fromUtf8(mpv_error_string(ef->error))
+                                          : QStringLiteral("Playback error"));
         break;
     }
     case MPV_EVENT_PROPERTY_CHANGE: {
-        mpv_event_property *prop = static_cast<mpv_event_property *>(event->data);
-        if (strcmp(prop->name, "time-pos") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
-            double pos = *static_cast<double *>(prop->data);
-            emit positionChanged(pos);
-        } else if (strcmp(prop->name, "duration") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
-            double dur = *static_cast<double *>(prop->data);
-            emit durationChanged(dur);
-        } else if (strcmp(prop->name, "pause") == 0 && prop->format == MPV_FORMAT_FLAG) {
-            bool p = *static_cast<int *>(prop->data);
-            emit pausedChanged(p);
-        } else if (strcmp(prop->name, "eof-reached") == 0 && prop->format == MPV_FORMAT_FLAG) {
-        } else if (strcmp(prop->name, "track-list") == 0) {
+        auto *prop = static_cast<mpv_event_property *>(event->data);
+        if (!prop || !prop->name)
+            break;
+        if (std::strcmp(prop->name, "time-pos") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+            emit positionChanged(*static_cast<double *>(prop->data));
+        } else if (std::strcmp(prop->name, "duration") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+            emit durationChanged(*static_cast<double *>(prop->data));
+        } else if (std::strcmp(prop->name, "pause") == 0 && prop->format == MPV_FORMAT_FLAG) {
+            emit pausedChanged(*static_cast<int *>(prop->data) != 0);
+        } else if (std::strcmp(prop->name, "track-list") == 0) {
             emit tracksChanged();
-        } else if (strcmp(prop->name, "video-format") == 0 && prop->format == MPV_FORMAT_STRING) {
-            const char *val = *static_cast<const char *const *>(prop->data);
+        } else if (std::strcmp(prop->name, "video-format") == 0) {
+            const char *val = prop->format == MPV_FORMAT_STRING
+                                  ? *static_cast<const char *const *>(prop->data) : nullptr;
             emit videoFormatChanged(val ? QString::fromUtf8(val) : QString());
         }
         break;
@@ -285,20 +214,228 @@ void MpvWidget::handleEvent(mpv_event *event)
     }
 }
 
-bool MpvWidget::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *)
+void MpvWidget::loadFile(const QString &path)
 {
-    if (eventType != "xcb_generic_event_t")
-        return false;
-
-    auto *event = static_cast<xcb_generic_event_t *>(message);
-    uint8_t type = event->response_type & ~0x80;
-
-    if (type == XCB_BUTTON_PRESS || type == XCB_BUTTON_RELEASE) {
-        auto *be = reinterpret_cast<xcb_button_press_event_t *>(event);
-        qDebug() << "[mpv NFC] BTN type" << type << "detail" << be->detail << "window=" << be->event;
-    } else if (type == XCB_MOTION_NOTIFY) {
-        qDebug() << "[mpv NFC] MOTION";
+    if (!m_mpv)
+        return;
+    if (!m_mpvInitialized || !m_renderCtx) {
+        m_pendingFile = path;
+        return;
     }
+    command({"loadfile", path, "replace"});
+}
 
-    return false;
+void MpvWidget::play()
+{
+    setProperty("pause", false);
+}
+
+void MpvWidget::pause()
+{
+    setProperty("pause", true);
+}
+
+void MpvWidget::stop()
+{
+    command({"stop"});
+}
+
+void MpvWidget::seek(double pos, bool absolute)
+{
+    command({"seek", QString::number(pos, 'f', 3), absolute ? "absolute" : "relative"});
+}
+
+void MpvWidget::frameStep()
+{
+    command({"frame-step"});
+}
+
+void MpvWidget::frameBack()
+{
+    command({"frame-back-step"});
+}
+
+void MpvWidget::setHwDec(const QString &api)
+{
+    setProperty("hwdec", api);
+}
+
+void MpvWidget::setVolume(double vol)
+{
+    setProperty("volume", vol);
+}
+
+void MpvWidget::setMute(bool mute)
+{
+    setProperty("mute", mute);
+}
+
+void MpvWidget::setSpeed(double speed)
+{
+    setProperty("speed", speed);
+}
+
+void MpvWidget::setAudioTrack(int64_t id)
+{
+    if (id < 0)
+        setProperty("aid", QStringLiteral("no"));
+    else
+        setProperty("aid", QVariant::fromValue<qlonglong>(id));
+}
+
+void MpvWidget::setSubtitleTrack(int64_t id)
+{
+    if (id < 0)
+        setProperty("sid", QStringLiteral("no"));
+    else
+        setProperty("sid", QVariant::fromValue<qlonglong>(id));
+}
+
+void MpvWidget::addSubtitle(const QString &path)
+{
+    command({"sub-add", path, "auto"});
+}
+
+void MpvWidget::setChannelBalance(double balance)
+{
+    setProperty("balance", balance);
+}
+
+void MpvWidget::setAspect(const QString &aspect)
+{
+    setProperty("video-aspect-override", aspect);
+}
+
+void MpvWidget::setVideoRotate(int degrees)
+{
+    setProperty("video-rotate", QVariant::fromValue<qlonglong>(degrees));
+}
+
+void MpvWidget::setSubDelay(double seconds)
+{
+    setProperty("sub-delay", seconds);
+}
+
+void MpvWidget::setSubScale(double scale)
+{
+    setProperty("sub-scale", scale);
+}
+
+void MpvWidget::setSubPos(int pos)
+{
+    setProperty("sub-pos", QVariant::fromValue<qlonglong>(pos));
+}
+
+void MpvWidget::setABLoopA(double pos)
+{
+    setProperty("ab-loop-a", pos);
+}
+
+void MpvWidget::setABLoopB(double pos)
+{
+    setProperty("ab-loop-b", pos);
+}
+
+void MpvWidget::setAudioFilter(const QString &filter)
+{
+    setProperty("af", filter);
+}
+
+void MpvWidget::screenshot(const QString &filePath, bool withSubtitles)
+{
+    command({"screenshot-to-file", filePath, withSubtitles ? "subtitles" : "video"});
+}
+
+void MpvWidget::setProperty(const QString &name, const QVariant &value)
+{
+    if (!m_mpv)
+        return;
+    const QByteArray n = name.toUtf8();
+    const char *key = n.constData();
+
+    switch (value.typeId()) {
+    case QMetaType::Bool: {
+        int v = value.toBool() ? 1 : 0;
+        mpv_set_property(m_mpv, key, MPV_FORMAT_FLAG, &v);
+        break;
+    }
+    case QMetaType::Int:
+    case QMetaType::LongLong:
+    case QMetaType::UInt:
+    case QMetaType::ULongLong: {
+        int64_t v = value.toLongLong();
+        mpv_set_property(m_mpv, key, MPV_FORMAT_INT64, &v);
+        break;
+    }
+    case QMetaType::Double:
+    case QMetaType::Float: {
+        double v = value.toDouble();
+        mpv_set_property(m_mpv, key, MPV_FORMAT_DOUBLE, &v);
+        break;
+    }
+    default: {
+        const QByteArray s = value.toString().toUtf8();
+        const char *v = s.constData();
+        mpv_set_property(m_mpv, key, MPV_FORMAT_STRING, &v);
+        break;
+    }
+    }
+}
+
+QVariant MpvWidget::property(const QString &name) const
+{
+    if (!m_mpv)
+        return {};
+    const QByteArray n = name.toUtf8();
+    const char *key = n.constData();
+
+    double d = 0;
+    if (mpv_get_property(m_mpv, key, MPV_FORMAT_DOUBLE, &d) >= 0)
+        return d;
+    int64_t i = 0;
+    if (mpv_get_property(m_mpv, key, MPV_FORMAT_INT64, &i) >= 0)
+        return QVariant::fromValue<qlonglong>(i);
+    int f = 0;
+    if (mpv_get_property(m_mpv, key, MPV_FORMAT_FLAG, &f) >= 0)
+        return f != 0;
+    char *s = nullptr;
+    if (mpv_get_property(m_mpv, key, MPV_FORMAT_STRING, &s) >= 0 && s) {
+        const QString r = QString::fromUtf8(s);
+        mpv_free(s);
+        return r;
+    }
+    return {};
+}
+
+void MpvWidget::command(const QStringList &args)
+{
+    if (!m_mpv || args.isEmpty())
+        return;
+    QList<QByteArray> storage;
+    storage.reserve(args.size());
+    for (const QString &a : args)
+        storage.append(a.toUtf8());
+
+    QVector<const char *> argv;
+    argv.reserve(storage.size() + 1);
+    for (const QByteArray &a : storage)
+        argv.append(a.constData());
+    argv.append(nullptr);
+
+    mpv_command_async(m_mpv, 0, argv.data());
+}
+
+double MpvWidget::timePos() const
+{
+    return property("time-pos").toDouble();
+}
+
+double MpvWidget::duration() const
+{
+    return property("duration").toDouble();
+}
+
+QString MpvWidget::videoFormat() const
+{
+    return property("video-format").toString();
 }

@@ -246,6 +246,10 @@
         <translation>Audio file referenced by CUE not found</translation>
     </message>
     <message>
+        <source>VAAPI（兼容模式）</source>
+        <translation>VAAPI (compatibility)</translation>
+    </message>
+    <message>
         <source>上一集</source>
         <translation>Previous file</translation>
     </message>
@@ -526,6 +530,10 @@
         <translation>Playlist program not found</translation>
     </message>
     <message>
+        <source>正在加载视频…</source>
+        <translation>Loading video…</translation>
+    </message>
+    <message>
         <source>添加文件到列表...</source>
         <translation>Add files to playlist...</translation>
     </message>
@@ -572,6 +580,10 @@
     <message>
         <source>自动</source>
         <translation>Auto</translation>
+    </message>
+    <message>
+        <source>自动（兼容模式）</source>
+        <translation>Auto (compatibility)</translation>
     </message>
     <message>
         <source>视频</source>

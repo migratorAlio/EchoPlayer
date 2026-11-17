@@ -6,6 +6,7 @@
 #include "core/audioengine.h"
 #include "core/mpriscontroller.h"
 #include "core/screensaverinhibitor.h"
+#include "core/statusnotifieritem.h"
 #include "ui/thumbnailprovider.h"
 #include "ui/adjustpanel.h"
 #include "i18n/languagemanager.h"
@@ -18,6 +19,8 @@
 #include <QContextMenuEvent>
 #include <QCursor>
 #include <QDateTime>
+#include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDebug>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -58,6 +61,21 @@
 #include <cstring>
 
 namespace {
+
+// freedesktop notification. QSystemTrayIcon::showMessage() only works with the
+// XEmbed balloon protocol, which is exactly what deepin's tray does not speak,
+// so the StatusNotifierItem path posts notifications over D-Bus instead.
+void sendDesktopNotification(const QString &title, const QString &body)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.Notifications"),
+        QStringLiteral("/org/freedesktop/Notifications"),
+        QStringLiteral("org.freedesktop.Notifications"),
+        QStringLiteral("Notify"));
+    msg << QStringLiteral("EchoPlayer") << 0u << QString() << title << body
+        << QStringList() << QVariantMap() << 3000;
+    QDBusConnection::sessionBus().send(msg);
+}
 
 struct TrackEntry {
     qlonglong id = -1;
@@ -166,6 +184,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_edgeTimer->setInterval(50);
     m_osdTimer = new QTimer(this);
     m_osdTimer->setSingleShot(true);
+    m_loadingTimer = new QTimer(this);
+    m_loadingTimer->setInterval(100);
+    m_loadingTimer->setSingleShot(false);
 
     setupUI();
     setupMenus();
@@ -243,6 +264,24 @@ void MainWindow::setupUI()
     m_infoLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_infoLabel->setVisible(false);
 
+    // Full-area black cover shown while a freshly opened file decodes its first
+    // frames. Hardware decoders (VAAPI / CUDA) can briefly present an
+    // uninitialised YUV surface, and YUV(0,0,0) renders as pure green; covering
+    // the whole video area hides that flash instead of showing it around a card.
+    m_loadingBox = new QWidget(central);
+    m_loadingBox->setStyleSheet("background: #000000;");
+    m_loadingBox->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto *loadingLayout = new QVBoxLayout(m_loadingBox);
+    loadingLayout->setContentsMargins(0, 0, 0, 0);
+    loadingLayout->setSpacing(0);
+    loadingLayout->setAlignment(Qt::AlignCenter);
+    m_loadingLabel = new QLabel(m_loadingBox);
+    m_loadingLabel->setAlignment(Qt::AlignCenter);
+    m_loadingLabel->setStyleSheet(
+        "color: #cfcfcf; font-size: 17px; font-weight: bold; background: transparent;");
+    loadingLayout->addWidget(m_loadingLabel);
+    m_loadingBox->hide();
+
     setCentralWidget(central);
     resize(960, 640);
     central->layout()->activate();
@@ -293,8 +332,14 @@ void MainWindow::setupMenus()
     };
     addDec(tr("关闭"), "no");
     addDec(tr("自动"), "auto");
+    // Copy-back hardware decoding: frames are decoded on the GPU then copied
+    // back to system memory before rendering. Slightly slower than zero-copy,
+    // but it avoids the uninitialised-surface green flash on the first frames
+    // that some VAAPI/CUDA zero-copy paths produce.
+    addDec(tr("自动（兼容模式）"), "auto-copy");
     addDec(QStringLiteral("CUDA"), "cuda");
     addDec(QStringLiteral("VAAPI"), "vaapi");
+    addDec(tr("VAAPI（兼容模式）"), "vaapi-copy");
     addDec(QStringLiteral("VDPAU"), "vdpau");
     addDec(QStringLiteral("Vulkan"), "vulkan");
     m_decoderMenu->actions().first()->setChecked(true);
@@ -551,6 +596,7 @@ void MainWindow::connectSignals()
     connect(m_ctrlBar->volumeSlider(), &QSlider::valueChanged, this, &MainWindow::onVolumeChanged);
     connect(m_ctrlBar->volBtn(), &QToolButton::clicked, this, &MainWindow::onToggleMute);
 
+    connect(m_loadingTimer, &QTimer::timeout, this, &MainWindow::onLoadingCheck);
     connect(m_mpvWidget, &MpvWidget::positionChanged, this, &MainWindow::onPositionChanged);
     connect(m_mpvWidget, &MpvWidget::durationChanged, this, &MainWindow::onDurationChanged);
     connect(m_mpvWidget, &MpvWidget::pausedChanged, this, &MainWindow::onPausedChanged);
@@ -678,6 +724,7 @@ void MainWindow::openMedia(const QString &path)
                                        : QFileInfo(actualPath).fileName();
     m_previewSeconds = -1.0;
     hideSeekPreview();
+    showLoading(actualPath);
 
     m_audioEngine->setAnalysisPaused(true);
     m_audioEngine->closeAll();
@@ -717,6 +764,10 @@ void MainWindow::openMedia(const QString &path)
     m_spectrumWidget->setVisible(showSpec);
     if (!hasPoster)
         m_posterLabel->setVisible(false);
+    // Audio-only files have no decoded video surface, so no green first-frame
+    // flash is possible. Drop the cover right away instead of hiding artwork.
+    if (!hasVideo)
+        hideLoading();
 
     m_titleBar->setFileName(m_currentTitle);
     setWindowTitle(m_currentTitle);
@@ -961,6 +1012,7 @@ void MainWindow::onStop()
 {
     if (m_destroyed)
         return;
+    hideLoading();
     m_mpvWidget->stop();
     m_audioEngine->setAnalysisPaused(true);
     m_ctrlBar->seekSlider()->setValue(0);
@@ -1050,6 +1102,7 @@ void MainWindow::onDurationChanged(double dur)
 
 void MainWindow::onMediaError(const QString &msg)
 {
+    hideLoading();
     if (!m_destroyed && !msg.isEmpty())
         showOsd(tr("错误：%1").arg(msg), 3000);
 }
@@ -1061,7 +1114,11 @@ void MainWindow::onVolumeChanged(int value)
     m_volumeBeforeMute = value;
     m_mpvWidget->setVolume(value);
     m_ctrlBar->setVolume(value);
-    m_mpris->setVolumePercent(value);
+    // loadSettings() restores the slider before setupDesktopIntegration()
+    // creates the MPRIS controller, so m_mpris can still be null here.
+    // setupDesktopIntegration() syncs the current slider value once it exists.
+    if (m_mpris)
+        m_mpris->setVolumePercent(value);
     if (m_muted) {
         m_muted = false;
         m_mpvWidget->setMute(false);
@@ -1229,6 +1286,57 @@ void MainWindow::toggleMediaInfo()
     m_infoLabel->setVisible(true);
     repositionBars();
     m_infoLabel->raise();
+}
+
+void MainWindow::showLoading(const QString &filePath)
+{
+    if (m_destroyed || !m_loadingBox || !m_loadingLabel)
+        return;
+    m_loadingFilePath = filePath;
+    m_loadingTicks = 0;
+    m_loadingLabel->setText(tr("正在加载视频…"));
+    m_loadingBox->setVisible(true);
+    m_loadingBox->raise();
+    repositionBars();
+    m_loadingTimer->start();
+}
+
+void MainWindow::hideLoading()
+{
+    if (m_loadingTimer)
+        m_loadingTimer->stop();
+    m_loadingFilePath.clear();
+    if (m_loadingBox && m_loadingBox->isVisible())
+        m_loadingBox->setVisible(false);
+}
+
+void MainWindow::onLoadingCheck()
+{
+    if (m_destroyed || m_loadingFilePath.isEmpty()) {
+        hideLoading();
+        return;
+    }
+    // The overlay is only meaningful for the file we just opened. If the
+    // user switched files again in the meantime, keep waiting on the new one.
+    if (m_currentFilePath != m_loadingFilePath) {
+        m_loadingFilePath = m_currentFilePath;
+        m_loadingTicks = 0;
+        return;
+    }
+    // Hardware decoders can hand the renderer an uninitialised YUV surface for
+    // the first few frames, which displays as pure green until the first real
+    // frame lands. Keep the black cover up for a minimum stretch (500ms) so
+    // that flash never reaches the user, then reveal once playback advances.
+    const double pos = m_mpvWidget->timePos();
+    ++m_loadingTicks;
+    if (m_loadingTicks >= 5 && pos > 0.1) {
+        hideLoading();
+        return;
+    }
+    // Safety net: never let the overlay cover the picture forever (e.g. a
+    // paused-open or a stalled stream). 200 ticks * 100ms = 20s.
+    if (m_loadingTicks > 200)
+        hideLoading();
 }
 
 void MainWindow::showOsd(const QString &text, int ms)
@@ -1718,6 +1826,13 @@ void MainWindow::repositionBars()
         m_infoLabel->adjustSize();
         m_infoLabel->move(20, m_titleBarHeight + 16);
     }
+
+    if (m_loadingBox && m_loadingBox->isVisible()) {
+        // Cover the whole video area so the green/black first-frame flash never
+        // shows; the label inside the box is centred by its layout.
+        m_loadingBox->setGeometry(videoTopLeft.x(), videoTopLeft.y(), mw, mh);
+        m_loadingBox->raise();
+    }
 }
 
 void MainWindow::showTitleBar()
@@ -1805,19 +1920,22 @@ void MainWindow::showEvent(QShowEvent *event)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (!m_forceQuit && m_trayOnClose && m_trayIcon && m_trayIcon->isVisible()
-        && QSystemTrayIcon::isSystemTrayAvailable()) {
+    if (!m_forceQuit && m_trayOnClose && m_trayUsable) {
         saveSettings();
         hide();
         event->ignore();
         if (!m_trayNoticeShown) {
             m_trayNoticeShown = true;
-            m_trayIcon->showMessage(QStringLiteral("EchoPlayer"),
-                tr("已最小化到托盘，右键托盘图标可退出"),
-                QSystemTrayIcon::Information, 3000);
+            const QString body = tr("已最小化到托盘，右键托盘图标可退出");
+            if (m_sni)
+                sendDesktopNotification(QStringLiteral("EchoPlayer"), body);
+            else
+                m_trayIcon->showMessage(QStringLiteral("EchoPlayer"), body,
+                                        QSystemTrayIcon::Information, 3000);
         }
         return;
     }
+
     saveSettings();
     closePlaylist();
     m_forceQuit = true;
@@ -2035,12 +2153,6 @@ void MainWindow::setupDesktopIntegration()
             onToggleFullscreen();
     });
 
-    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
-        qDebug() << "[tray] no system tray on this session";
-        return;
-    }
-
-    m_trayIcon = new QSystemTrayIcon(QIcon(QStringLiteral(":/icon.png")), this);
     m_trayMenu = new QMenu(this);
     connect(m_trayMenu->addAction(tr("显示 / 隐藏")), &QAction::triggered,
             this, [this] {
@@ -2060,6 +2172,69 @@ void MainWindow::setupDesktopIntegration()
     connect(m_trayMenu->addAction(tr("退出")), &QAction::triggered,
             this, [this] { m_forceQuit = true; close(); });
 
+    // The bundled artwork is 1075x1054; trays want small bitmaps.
+    const QIcon sourceIcon(QStringLiteral(":/icon.png"));
+    QIcon trayIcon;
+    for (int side : {16, 22, 24, 32, 48, 64, 96})
+        trayIcon.addPixmap(sourceIcon.pixmap(side, side));
+
+    const auto toggleWindow = [this] {
+        if (isVisible()) hide();
+        else { showNormal(); raise(); activateWindow(); }
+    };
+
+    // A registered StatusNotifierItem carrying an installed theme IconName is
+    // picked up by dde-shell's tray (verified on deepin 25), so minimise-to-tray
+    // is available whenever the backend registers successfully.
+    const auto setTrayUsable = [this](bool usable) {
+        m_trayUsable = usable;
+        if (!usable) {
+            if (m_trayOnCloseAction)
+                m_trayOnCloseAction->setEnabled(false);
+            qDebug() << "[tray] no usable tray, closing the window exits instead";
+        }
+    };
+
+    // Preferred backend: StatusNotifierItem over D-Bus. Qt's QSystemTrayIcon is
+    // XEmbed-only on X11, and deepin's dde-dock implements *only*
+    // StatusNotifierItem — it never adopts XEmbed icons, yet keeps the
+    // _NET_SYSTEM_TRAY_S0 selection owned, so isSystemTrayAvailable() still
+    // reports true and the icon silently never appears.
+    if (StatusNotifierItem::isAvailable()) {
+        m_sni = new StatusNotifierItem(this);
+        m_sni->setMenu(m_trayMenu);
+        m_sni->setIcon(trayIcon);
+        // deepin's tray host prefers IconName over IconPixmap; both are sent so
+        // KDE/GNOME keep working while dde-shell resolves the installed theme icon.
+        m_sni->setIconName(QStringLiteral("org.echoplayer.EchoPlayer"));
+        m_sni->setTitle(QStringLiteral("EchoPlayer"));
+        // Probes on deepin showed the dock chokes on items that carry a real
+        // X11 window id; Fcitx and Chrome both advertise 0.
+        m_sni->setWindowId(0);
+        connect(m_sni, &StatusNotifierItem::activateRequested, this, toggleWindow);
+        connect(m_sni, &StatusNotifierItem::secondaryActivateRequested, this, toggleWindow);
+        connect(m_sni, &StatusNotifierItem::contextMenuRequested, this,
+                [this](const QPoint &pos) {
+            m_trayMenu->popup(pos.isNull() ? QCursor::pos() : pos);
+        });
+        if (m_sni->registerItem()) {
+            qDebug() << "[tray] using StatusNotifierItem backend";
+            setTrayUsable(true);
+            syncTrayMenu();
+            return;
+        }
+        delete m_sni;
+        m_sni = nullptr;
+        qDebug() << "[tray] SNI registration failed, falling back to XEmbed";
+    }
+
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        qDebug() << "[tray] no tray backend available";
+        setTrayUsable(false);
+        return;
+    }
+
+    m_trayIcon = new QSystemTrayIcon(trayIcon, this);
     m_trayIcon->setContextMenu(m_trayMenu);
     m_trayIcon->setToolTip(QStringLiteral("EchoPlayer"));
     connect(m_trayIcon, &QSystemTrayIcon::activated, this,
@@ -2070,6 +2245,8 @@ void MainWindow::setupDesktopIntegration()
         }
     });
     m_trayIcon->show();
+    qDebug() << "[tray] using XEmbed backend, visible?" << m_trayIcon->isVisible();
+    setTrayUsable(m_trayIcon->isVisible());
     syncTrayMenu();
 }
 
@@ -2080,9 +2257,12 @@ void MainWindow::syncTrayMenu()
     const bool playing = !m_currentFilePath.isEmpty()
         && !m_mpvWidget->property("pause").toBool();
     m_trayPlayAction->setText(playing ? tr("暂停") : tr("播放"));
+    const QString tip = m_currentTitle.isEmpty()
+        ? QStringLiteral("EchoPlayer") : m_currentTitle;
     if (m_trayIcon)
-        m_trayIcon->setToolTip(m_currentTitle.isEmpty()
-            ? QStringLiteral("EchoPlayer") : m_currentTitle);
+        m_trayIcon->setToolTip(tip);
+    if (m_sni && m_sni->registered())
+        m_sni->setToolTip(tip);
 }
 
 void MainWindow::setInhibitForPlayback(bool playing)

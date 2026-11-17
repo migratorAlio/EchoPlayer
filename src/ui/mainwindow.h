@@ -14,6 +14,7 @@
 #include <QByteArray>
 #include <QImage>
 #include <QSystemTrayIcon>
+#include <QElapsedTimer>
 
 #include "core/types.h"
 
@@ -26,6 +27,7 @@ class ControlBar;
 class SpectrumWidget;
 class MprisController;
 class ScreenSaverInhibitor;
+class StatusNotifierItem;
 class ThumbnailProvider;
 class AdjustPanel;
 
@@ -95,6 +97,7 @@ private slots:
 
     void onSpectrumTimer();
     void onLyricTimer();
+    void onLoadingCheck();
     void onEdgeTimer();
     void onOsdTimer();
 
@@ -114,6 +117,8 @@ private:
     void retranslateDynamic();
 
     void showOsd(const QString &text, int ms = 1500);
+    void showLoading(const QString &filePath);
+    void hideLoading();
     void setSpeed(double speed);
     void seekRelative(double delta);
     void adjustVolume(int delta);
@@ -182,6 +187,8 @@ private:
     QLabel *m_posterLabel = nullptr;
     QLabel *m_osdLabel = nullptr;
     QLabel *m_infoLabel = nullptr;
+    QLabel *m_loadingLabel = nullptr;
+    QWidget *m_loadingBox = nullptr;
 
     QMenu *m_contextMenu = nullptr;
     QMenu *m_videoMenu = nullptr;
@@ -233,17 +240,22 @@ private:
     QTimer *m_edgeTimer = nullptr;
     QTimer *m_osdTimer = nullptr;
     QTimer *m_previewTimer = nullptr;
+    QTimer *m_loadingTimer = nullptr;
+    QString m_loadingFilePath;
+    int m_loadingTicks = 0;
 
     // Desktop integration
     MprisController *m_mpris = nullptr;
     ScreenSaverInhibitor *m_inhibitor = nullptr;
     QSystemTrayIcon *m_trayIcon = nullptr;
+    StatusNotifierItem *m_sni = nullptr;
     QMenu *m_trayMenu = nullptr;
     QAction *m_trayPlayAction = nullptr;
     QAction *m_trayOnCloseAction = nullptr;
     QAction *m_shuffleAction = nullptr;
     QAction *m_repeatAction = nullptr;
     bool m_trayOnClose = true;
+    bool m_trayUsable = false;
     bool m_forceQuit = false;
     bool m_trayNoticeShown = false;
 

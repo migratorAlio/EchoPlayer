@@ -28,6 +28,7 @@ set(SOURCES
     src/core/audioengine.cpp
     src/core/mpriscontroller.cpp
     src/core/screensaverinhibitor.cpp
+    src/core/statusnotifieritem.cpp
     resources/resources.qrc
 )
 
@@ -43,6 +44,7 @@ set(HEADERS
     src/core/audioengine.h
     src/core/mpriscontroller.h
     src/core/screensaverinhibitor.h
+    src/core/statusnotifieritem.h
     src/core/types.h
 )
 

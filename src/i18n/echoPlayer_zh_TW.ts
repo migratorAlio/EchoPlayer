@@ -246,6 +246,10 @@
         <translation>CUE 參照的音訊檔案不存在</translation>
     </message>
     <message>
+        <source>VAAPI（兼容模式）</source>
+        <translation>VAAPI（兼容模式）</translation>
+    </message>
+    <message>
         <source>上一集</source>
         <translation>上一集</translation>
     </message>
@@ -526,6 +530,10 @@
         <translation>未找到播放清單程式</translation>
     </message>
     <message>
+        <source>正在加载视频…</source>
+        <translation>正在載入視訊…</translation>
+    </message>
+    <message>
         <source>添加文件到列表...</source>
         <translation>新增檔案到清單...</translation>
     </message>
@@ -572,6 +580,10 @@
     <message>
         <source>自动</source>
         <translation>自動</translation>
+    </message>
+    <message>
+        <source>自动（兼容模式）</source>
+        <translation>自動（兼容模式）</translation>
     </message>
     <message>
         <source>视频</source>
